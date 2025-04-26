@@ -68,7 +68,8 @@ impl Client {
         info!(remote_port, "connected to server");
         
         if let (Some(subdomain), Some(domain)) = (&subdomain, &domain) {
-            info!("listening at {subdomain}.{domain} and {to}:{remote_port}");
+            info!("listening at http://{subdomain}.{domain}:1337");
+            info!("port-based access also available at {to}:{remote_port}");
         } else {
             info!("listening at {to}:{remote_port}");
         }

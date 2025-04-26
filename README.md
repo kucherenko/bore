@@ -113,10 +113,25 @@ bore server --enable-subdomain --domain yourdomain.com
 
 # On the client
 bore local 8000 --to yourserver.com
-# Client will receive a URL like: user-12345abcde.yourdomain.com
+# Client will receive URLs like: 
+# http://user-12345abcde.yourdomain.com:1337
 ```
 
-This feature requires an nginx server configured with a wildcard domain to handle the HTTP routing. A typical nginx configuration would look like:
+When subdomain routing is enabled, bore will:
+
+1. Launch an HTTP proxy on port 1337
+2. Route incoming requests to this port to the appropriate client tunnel based on the Host header
+
+### Requirements for Subdomain Routing
+
+To use subdomain routing properly:
+
+1. DNS must be configured to point your domain and all subdomains to the server (using a wildcard DNS record)
+2. Clients must specify port 1337 when accessing the subdomain in their browser
+
+### Alternative with Nginx
+
+If you don't want to run bore as root, you can also use nginx as a reverse proxy in front of bore:
 
 ```nginx
 server {
@@ -127,11 +142,16 @@ server {
         proxy_pass http://localhost:$remote_port;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-Where `$remote_port` would be extracted from the subdomain using a custom solution or nginx variables.
+In this case, you would:
+1. Run bore without the `--enable-subdomain` flag
+2. Configure nginx to extract the port from the bore server
+3. Route requests based on your own logic
 ### Self-Hosting
 
 As mentioned in the startup instructions, there is a public instance of the `bore` server running at `bore.pub`. However, if you want to self-host `bore` on your own network, you can do so with the following command:

@@ -36,7 +36,8 @@ enum Command {
         secret: Option<String>,
     },
 
-    /// Runs the remote proxy server.
+    /// Runs the remote proxy server. 
+    /// Note: When using subdomain routing, the server needs permission to bind to ports 80/443.
     Server {
         /// Minimum accepted TCP port number.
         #[clap(long, default_value_t = 1024, env = "BORE_MIN_PORT")]

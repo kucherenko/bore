@@ -80,29 +80,11 @@ async fn mismatched_secret(
 ) {
     let _guard = SERIAL_GUARD.lock().await;
 
-    spawn_server(server_secret).await;
+    spawn_server(server_secret, false).await;
     assert!(spawn_client(client_secret).await.is_err());
 }
 
-#[tokio::test]
-async fn invalid_address() -> Result<()> {
-    // We don't need the serial guard for this test because it doesn't create a server.
-    async fn check_address(to: &str, use_secret: bool) -> Result<()> {
-        match Client::new("localhost", 5000, to, 0, use_secret.then_some("a secret")).await {
-            Ok(_) => Err(anyhow!("expected error for {to}, use_secret={use_secret}")),
-            Err(_) => Ok(()),
-        }
-    }
-    tokio::try_join!(
-        check_address("google.com", false),
-        check_address("google.com", true),
-        check_address("nonexistent.domain.for.demonstration", false),
-        check_address("nonexistent.domain.for.demonstration", true),
-        check_address("malformed !$uri$%", false),
-        check_address("malformed !$uri$%", true),
-    )?;
-    Ok(())
-}
+
 #[tokio::test]
 async fn invalid_address() -> Result<()> {
     // We don't need the serial guard for this test because it doesn't create a server.
@@ -128,7 +110,7 @@ async fn subdomain_routing() -> Result<()> {
     let _guard = SERIAL_GUARD.lock().await;
 
     spawn_server(None, true).await;
-    let (listener, addr) = spawn_client(None).await?;
+    let (listener, _addr) = spawn_client(None).await?;
     
     // Test that the client received a subdomain
     let local_port = listener.local_addr()?.port();
@@ -144,7 +126,7 @@ async fn subdomain_routing() -> Result<()> {
 async fn very_long_frame() -> Result<()> {
     let _guard = SERIAL_GUARD.lock().await;
 
-    spawn_server(None).await;
+    spawn_server(None, false).await;
     let mut attacker = TcpStream::connect(("localhost", CONTROL_PORT)).await?;
 
     // Slowly send a very long frame.

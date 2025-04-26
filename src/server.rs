@@ -37,8 +37,8 @@ pub struct Server {
     /// Base domain for subdomain routing.
     domain: String,
 
-    /// Map of active subdomains to client connections.
-    subdomains: Arc<DashMap<String, Uuid>>,
+    /// Map of active subdomains to client port information.
+    subdomains: Arc<DashMap<String, u16>>,
 }
 
 impl Server {
@@ -66,6 +66,96 @@ impl Server {
     pub fn set_bind_tunnels(&mut self, bind_tunnels: IpAddr) {
         self.bind_tunnels = bind_tunnels;
     }
+    /// Start an HTTP proxy server for subdomain routing
+    async fn start_http_proxy(&self, port: u16) -> Result<()> {
+        let listener = TcpListener::bind((self.bind_addr, port)).await?;
+        let subdomains = Arc::clone(&self.subdomains);
+        let domain = self.domain.clone();
+        let bind_addr = self.bind_addr;
+
+        info!(port, "HTTP proxy server listening for subdomains");
+
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((mut stream, addr)) => {
+                        let subdomains = Arc::clone(&subdomains);
+                        let domain = domain.clone();
+
+                        tokio::spawn(async move {
+                            info!(?addr, "new HTTP connection");
+
+                            // Read the HTTP request to extract the Host header
+                            let mut buffer = [0; 4096];
+                            match tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await {
+                                Ok(n) if n > 0 => {
+                                    let request = String::from_utf8_lossy(&buffer[..n]);
+
+                                    // Extract the Host header
+                                    if let Some(host_line) = request
+                                        .lines()
+                                        .find(|line| line.to_lowercase().starts_with("host:"))
+                                    {
+                                        let host = host_line[5..].trim();
+                                        info!(?host, "HTTP request for host");
+
+                                        // Check if this is a subdomain request
+                                        if host.ends_with(&domain) {
+                                            let subdomain = if let Some(idx) = host.find('.') {
+                                                &host[0..idx]
+                                            } else {
+                                                ""
+                                            };
+
+                                            if let Some(client_port) = subdomains.get(subdomain) {
+                                                info!(?subdomain, "found matching subdomain");
+
+                                                // Forward the request to the tunnel port
+                                                if let Ok(mut tunnel_stream) =
+                                                    TcpStream::connect((bind_addr, *client_port))
+                                                        .await
+                                                {
+                                                    // Forward the initial request
+                                                    if let Err(e) =
+                                                        tunnel_stream.write_all(&buffer[..n]).await
+                                                    {
+                                                        warn!("error forwarding request: {}", e);
+                                                        return;
+                                                    }
+
+                                                    // Now proxy the rest of the connection
+                                                    if let Err(e) =
+                                                        proxy(stream, tunnel_stream).await
+                                                    {
+                                                        warn!("error proxying connection: {}", e);
+                                                    }
+                                                    return;
+                                                } else {
+                                                    warn!("could not connect to tunnel port");
+                                                }
+                                            } else {
+                                                warn!(?subdomain, "subdomain not found");
+                                            }
+                                        }
+                                    }
+
+                                    // If we get here, there was no valid subdomain or we couldn't connect
+                                    let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\nSubdomain not found";
+                                    let _ = stream.write_all(response.as_bytes()).await;
+                                }
+                                _ => {}
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        warn!("error accepting HTTP connection: {}", e);
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
     /// Enable subdomain routing with the given base domain.
     pub fn enable_subdomain_routing(&mut self, domain: &str) {
         self.subdomain_routing = true;
@@ -81,6 +171,15 @@ impl Server {
     /// Start the server, listening for new connections.
     pub async fn listen(self) -> Result<()> {
         let this = Arc::new(self);
+
+        // Start HTTP proxy server if subdomain routing is enabled
+        if this.subdomain_routing {
+            // Start HTTP proxy on port 1337
+            if let Err(e) = this.start_http_proxy(1337).await {
+                warn!("Failed to start HTTP proxy on port 1337: {}. Will continue without HTTP routing.", e);
+            }
+        }
+
         let listener = TcpListener::bind((this.bind_addr, CONTROL_PORT)).await?;
         info!(addr = ?this.bind_addr, "server listening");
 
@@ -163,20 +262,21 @@ impl Server {
                 };
                 let host = listener.local_addr()?.ip();
                 let port = listener.local_addr()?.port();
-                
+
                 if self.subdomain_routing {
                     let subdomain = self.generate_subdomain();
                     info!(?host, ?port, subdomain, "new client with subdomain");
-                    // Register the subdomain for this client
-                    let client_id = Uuid::new_v4();
-                    self.subdomains.insert(subdomain.clone(), client_id);
-                    
+                    // Register the subdomain with the assigned port
+                    self.subdomains.insert(subdomain.clone(), port);
+
                     // Send the port and subdomain information to the client
-                    stream.send(ServerMessage::HelloWithSubdomain {
-                        port,
-                        subdomain,
-                        domain: self.domain.clone(),
-                    }).await?;
+                    stream
+                        .send(ServerMessage::HelloWithSubdomain {
+                            port,
+                            subdomain,
+                            domain: self.domain.clone(),
+                        })
+                        .await?;
                 } else {
                     info!(?host, ?port, "new client");
                     stream.send(ServerMessage::Hello(port)).await?;
