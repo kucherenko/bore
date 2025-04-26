@@ -30,6 +30,15 @@ pub struct Server {
 
     /// IP address where tunnels will listen on.
     bind_tunnels: IpAddr,
+
+    /// Whether subdomain routing is enabled.
+    subdomain_routing: bool,
+
+    /// Base domain for subdomain routing.
+    domain: String,
+
+    /// Map of active subdomains to client connections.
+    subdomains: Arc<DashMap<String, Uuid>>,
 }
 
 impl Server {
@@ -42,6 +51,9 @@ impl Server {
             auth: secret.map(Authenticator::new),
             bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             bind_tunnels: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            subdomain_routing: false,
+            domain: String::new(),
+            subdomains: Arc::new(DashMap::new()),
         }
     }
 
@@ -53,6 +65,17 @@ impl Server {
     /// Set the IP address where the control server will bind to.
     pub fn set_bind_tunnels(&mut self, bind_tunnels: IpAddr) {
         self.bind_tunnels = bind_tunnels;
+    }
+    /// Enable subdomain routing with the given base domain.
+    pub fn enable_subdomain_routing(&mut self, domain: &str) {
+        self.subdomain_routing = true;
+        self.domain = domain.to_string();
+    }
+
+    /// Generate a unique subdomain for a client.
+    fn generate_subdomain(&self) -> String {
+        // Generate a random subdomain with a UUID to ensure uniqueness
+        format!("user-{}", Uuid::new_v4().simple())
     }
 
     /// Start the server, listening for new connections.
@@ -140,8 +163,24 @@ impl Server {
                 };
                 let host = listener.local_addr()?.ip();
                 let port = listener.local_addr()?.port();
-                info!(?host, ?port, "new client");
-                stream.send(ServerMessage::Hello(port)).await?;
+                
+                if self.subdomain_routing {
+                    let subdomain = self.generate_subdomain();
+                    info!(?host, ?port, subdomain, "new client with subdomain");
+                    // Register the subdomain for this client
+                    let client_id = Uuid::new_v4();
+                    self.subdomains.insert(subdomain.clone(), client_id);
+                    
+                    // Send the port and subdomain information to the client
+                    stream.send(ServerMessage::HelloWithSubdomain {
+                        port,
+                        subdomain,
+                        domain: self.domain.clone(),
+                    }).await?;
+                } else {
+                    info!(?host, ?port, "new client");
+                    stream.send(ServerMessage::Hello(port)).await?;
+                }
 
                 loop {
                     if stream.send(ServerMessage::Heartbeat).await.is_err() {

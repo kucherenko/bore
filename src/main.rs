@@ -57,6 +57,14 @@ enum Command {
         /// IP address where tunnels will listen on, defaults to --bind-addr.
         #[clap(long)]
         bind_tunnels: Option<IpAddr>,
+
+        /// Enable subdomain routing.
+        #[clap(long)]
+        enable_subdomain: bool,
+
+        /// Base domain for subdomain routing.
+        #[clap(long, default_value = "bore.pub")]
+        domain: String,
     },
 }
 
@@ -79,6 +87,8 @@ async fn run(command: Command) -> Result<()> {
             secret,
             bind_addr,
             bind_tunnels,
+            enable_subdomain,
+            domain,
         } => {
             let port_range = min_port..=max_port;
             if port_range.is_empty() {
@@ -89,6 +99,9 @@ async fn run(command: Command) -> Result<()> {
             let mut server = Server::new(port_range, secret.as_deref());
             server.set_bind_addr(bind_addr);
             server.set_bind_tunnels(bind_tunnels.unwrap_or(bind_addr));
+            if enable_subdomain {
+                server.enable_subdomain_routing(&domain);
+            }
             server.listen().await?;
         }
     }

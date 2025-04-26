@@ -16,8 +16,12 @@ lazy_static! {
 }
 
 /// Spawn the server, giving some time for the control port TcpListener to start.
-async fn spawn_server(secret: Option<&str>) {
-    tokio::spawn(Server::new(1024..=65535, secret).listen());
+async fn spawn_server(secret: Option<&str>, enable_subdomain: bool) {
+    let mut server = Server::new(1024..=65535, secret);
+    if enable_subdomain {
+        server.enable_subdomain_routing("example.com");
+    }
+    tokio::spawn(server.listen());
     time::sleep(Duration::from_millis(50)).await;
 }
 
@@ -36,7 +40,7 @@ async fn spawn_client(secret: Option<&str>) -> Result<(TcpListener, SocketAddr)>
 async fn basic_proxy(#[values(None, Some(""), Some("abc"))] secret: Option<&str>) -> Result<()> {
     let _guard = SERIAL_GUARD.lock().await;
 
-    spawn_server(secret).await;
+    spawn_server(secret, false).await;
     let (listener, addr) = spawn_client(secret).await?;
 
     tokio::spawn(async move {
@@ -97,6 +101,42 @@ async fn invalid_address() -> Result<()> {
         check_address("malformed !$uri$%", false),
         check_address("malformed !$uri$%", true),
     )?;
+    Ok(())
+}
+#[tokio::test]
+async fn invalid_address() -> Result<()> {
+    // We don't need the serial guard for this test because it doesn't create a server.
+    async fn check_address(to: &str, use_secret: bool) -> Result<()> {
+        match Client::new("localhost", 5000, to, 0, use_secret.then_some("a secret")).await {
+            Ok(_) => Err(anyhow!("expected error for {to}, use_secret={use_secret}")),
+            Err(_) => Ok(()),
+        }
+    }
+    tokio::try_join!(
+        check_address("google.com", false),
+        check_address("google.com", true),
+        check_address("nonexistent.domain.for.demonstration", false),
+        check_address("nonexistent.domain.for.demonstration", true),
+        check_address("malformed !$uri$%", false),
+        check_address("malformed !$uri$%", true),
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn subdomain_routing() -> Result<()> {
+    let _guard = SERIAL_GUARD.lock().await;
+
+    spawn_server(None, true).await;
+    let (listener, addr) = spawn_client(None).await?;
+    
+    // Test that the client received a subdomain
+    let local_port = listener.local_addr()?.port();
+    let client = Client::new("localhost", local_port, "localhost", 0, None).await?;
+    assert!(client.subdomain().is_some());
+    assert!(client.domain().is_some());
+    assert!(client.url().is_some());
+    
     Ok(())
 }
 

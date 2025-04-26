@@ -29,6 +29,12 @@ pub struct Client {
     /// Port that is publicly available on the remote.
     remote_port: u16,
 
+    /// Subdomain that is assigned to this client (if any).
+    subdomain: Option<String>,
+
+    /// Base domain for the tunnel.
+    domain: Option<String>,
+
     /// Optional secret used to authenticate clients.
     auth: Option<Authenticator>,
 }
@@ -49,8 +55,9 @@ impl Client {
         }
 
         stream.send(ClientMessage::Hello(port)).await?;
-        let remote_port = match stream.recv_timeout().await? {
-            Some(ServerMessage::Hello(remote_port)) => remote_port,
+        let (remote_port, subdomain, domain) = match stream.recv_timeout().await? {
+            Some(ServerMessage::Hello(remote_port)) => (remote_port, None, None),
+            Some(ServerMessage::HelloWithSubdomain { port, subdomain, domain }) => (port, Some(subdomain), Some(domain)),
             Some(ServerMessage::Error(message)) => bail!("server error: {message}"),
             Some(ServerMessage::Challenge(_)) => {
                 bail!("server requires authentication, but no client secret was provided");
@@ -59,7 +66,12 @@ impl Client {
             None => bail!("unexpected EOF"),
         };
         info!(remote_port, "connected to server");
-        info!("listening at {to}:{remote_port}");
+        
+        if let (Some(subdomain), Some(domain)) = (&subdomain, &domain) {
+            info!("listening at {subdomain}.{domain} and {to}:{remote_port}");
+        } else {
+            info!("listening at {to}:{remote_port}");
+        }
 
         Ok(Client {
             conn: Some(stream),
@@ -67,6 +79,8 @@ impl Client {
             local_host: local_host.to_string(),
             local_port,
             remote_port,
+            subdomain,
+            domain,
             auth,
         })
     }
@@ -75,34 +89,52 @@ impl Client {
     pub fn remote_port(&self) -> u16 {
         self.remote_port
     }
+    /// Returns the subdomain assigned to this client, if any.
+    pub fn subdomain(&self) -> Option<&str> {
+        self.subdomain.as_deref()
+    }
+
+    /// Returns the base domain for this tunnel, if any.
+    pub fn domain(&self) -> Option<&str> {
+        self.domain.as_deref()
+    }
+
+    /// Returns the full URL for this tunnel, if subdomain routing is enabled.
+    pub fn url(&self) -> Option<String> {
+        match (&self.subdomain, &self.domain) {
+            (Some(subdomain), Some(domain)) => Some(format!("{}.{}", subdomain, domain)),
+            _ => None,
+        }
+    }
 
     /// Start the client, listening for new connections.
     pub async fn listen(mut self) -> Result<()> {
-        let mut conn = self.conn.take().unwrap();
-        let this = Arc::new(self);
-        loop {
-            match conn.recv().await? {
-                Some(ServerMessage::Hello(_)) => warn!("unexpected hello"),
-                Some(ServerMessage::Challenge(_)) => warn!("unexpected challenge"),
-                Some(ServerMessage::Heartbeat) => (),
-                Some(ServerMessage::Connection(id)) => {
-                    let this = Arc::clone(&this);
-                    tokio::spawn(
-                        async move {
-                            info!("new connection");
-                            match this.handle_connection(id).await {
-                                Ok(_) => info!("connection exited"),
-                                Err(err) => warn!(%err, "connection exited with error"),
+            let mut conn = self.conn.take().unwrap();
+            let this = Arc::new(self);
+            loop {
+                match conn.recv().await? {
+                    Some(ServerMessage::Hello(_)) => warn!("unexpected hello"),
+                    Some(ServerMessage::HelloWithSubdomain { .. }) => warn!("unexpected hello with subdomain"),
+                    Some(ServerMessage::Challenge(_)) => warn!("unexpected challenge"),
+                    Some(ServerMessage::Heartbeat) => (),
+                    Some(ServerMessage::Connection(id)) => {
+                        let this = Arc::clone(&this);
+                        tokio::spawn(
+                            async move {
+                                info!("new connection");
+                                match this.handle_connection(id).await {
+                                    Ok(_) => info!("connection exited"),
+                                    Err(err) => warn!(%err, "connection exited with error"),
+                                }
                             }
-                        }
-                        .instrument(info_span!("proxy", %id)),
-                    );
+                            .instrument(info_span!("proxy", %id)),
+                        );
+                    }
+                    Some(ServerMessage::Error(err)) => error!(%err, "server error"),
+                    None => return Ok(()),
                 }
-                Some(ServerMessage::Error(err)) => error!(%err, "server error"),
-                None => return Ok(()),
             }
         }
-    }
 
     async fn handle_connection(&self, id: Uuid) -> Result<()> {
         let mut remote_conn =

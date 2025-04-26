@@ -42,6 +42,16 @@ pub enum ServerMessage {
     /// Response to a client's initial message, with actual public port.
     Hello(u16),
 
+    /// Response to a client's initial message, with actual public port and subdomain.
+    HelloWithSubdomain {
+        /// The port number assigned to the tunnel
+        port: u16,
+        /// The subdomain assigned to the tunnel
+        subdomain: String,
+        /// The base domain for the tunnel
+        domain: String,
+    },
+
     /// No-op used to test if the client is still reachable.
     Heartbeat,
 

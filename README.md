@@ -103,6 +103,35 @@ Options:
   -h, --help               Print help
 ```
 
+## Subdomain Routing
+
+In addition to port-based routing, `bore` now supports subdomain-based routing. When subdomain routing is enabled on the server, clients will receive a unique subdomain URL in the format `<random-subdomain>.<domain>` rather than just a port number.
+
+```shell
+# On the server
+bore server --enable-subdomain --domain yourdomain.com
+
+# On the client
+bore local 8000 --to yourserver.com
+# Client will receive a URL like: user-12345abcde.yourdomain.com
+```
+
+This feature requires an nginx server configured with a wildcard domain to handle the HTTP routing. A typical nginx configuration would look like:
+
+```nginx
+server {
+    listen 80;
+    server_name *.yourdomain.com;
+    
+    location / {
+        proxy_pass http://localhost:$remote_port;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+Where `$remote_port` would be extracted from the subdomain using a custom solution or nginx variables.
 ### Self-Hosting
 
 As mentioned in the startup instructions, there is a public instance of the `bore` server running at `bore.pub`. However, if you want to self-host `bore` on your own network, you can do so with the following command:
